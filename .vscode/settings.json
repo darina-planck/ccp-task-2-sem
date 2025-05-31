@@ -1,0 +1,11 @@
+{
+    "code-runner.runInTerminal": true,
+    "code-runner.clearPreviousOutput": true,
+    "code-runner.saveFileBeforeRun": true,
+    "code-runner.preserveFocus": false,
+    "code-runner.ignoreSelection": false,
+    "code-runner.executorMap": {
+        "cpp": "cd $dir && g++ -std=c++17 -Wall -Wextra -O2 $fileName -o $fileNameWithoutExt && ./$fileNameWithoutExt && rm $fileNameWithoutExt"
+    
+    }
+}
