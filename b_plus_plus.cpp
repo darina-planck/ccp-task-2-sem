@@ -1,756 +1,443 @@
-#include <iostream>
-#include <vector>
-#include <algorithm>
-#include <iomanip>
-#include <queue>
-#include <random>
-#include <chrono>
-#include <climits>
+#include <iostream>  
+#include <vector>    // Для работы с динамическими массивами
+#include <random>    // Для генерации случайных чисел
+#include <algorithm> // Для алгоритмов (сортировка, поиск)
+#include <fstream>   // Для работы с файлами
 
-using namespace std;
-using namespace chrono;
+using namespace std; // Использование стандартного пространства имен
 
-// ================ B-ДЕРЕВО ================
+// Структура узла B-дерева
+struct BTreeNode {
+    vector<int> keys;            // Вектор ключей в узле
+    vector<BTreeNode*> children; // Вектор указателей на дочерние узлы
+    bool isLeaf;                 // Флаг: является ли узел листом
+    int order;                   // Порядок B-дерева (максимальное количество потомков)
 
-class BTreeNode {
-public:
-    vector<int> keys;           // Ключи в узле
-    vector<BTreeNode*> children; // Указатели на дочерние узлы
-    bool isLeaf;                // Является ли узел листом
-    int degree;                 // Минимальная степень
-
-    BTreeNode(int degree, bool isLeaf) {
-        this->degree = degree;
-        this->isLeaf = isLeaf;
-        keys.reserve(2 * degree - 1);
-        if (!isLeaf) {
-            children.reserve(2 * degree);
-        }
+    // Функция инициализации узла (заменяет конструктор)
+    // m - порядок дерева, leaf - является ли узел листом
+    void initialize(int m, bool leaf) {
+        order = m;               // Устанавливаем порядок дерева
+        isLeaf = leaf;           // Устанавливаем тип узла (лист или внутренний)
+        keys.clear();            // Очищаем вектор ключей (на всякий случай)
+        children.clear();        // Очищаем вектор потомков (на всякий случай)
+        keys.reserve(m - 1);     // Резервируем место для максимум m-1 ключей
+        children.reserve(m);     // Резервируем место для максимум m потомков
     }
 
-    ~BTreeNode() {
-        for (auto child : children) {
-            delete child;
+    // Поиск позиции ключа в узле
+    int findKey(int key) {
+        int idx = 0;             // Начинаем с первой позиции
+        // Ищем позицию, где должен находиться ключ
+        while (idx < keys.size() && keys[idx] < key) {
+            ++idx;               // Переходим к следующей позиции
         }
+        return idx;              // Возвращаем найденную позицию
     }
 
-    // Поиск ключа в поддереве с корнем в данном узле
-    BTreeNode* search(int key) {
-        int i = 0;
-        while (i < keys.size() && key > keys[i]) {
-            i++;
-        }
-
-        if (i < keys.size() && keys[i] == key) {
-            return this;
-        }
-
-        if (isLeaf) {
-            return nullptr;
-        }
-
-        return children[i]->search(key);
+    // Проверка, полон ли узел (содержит максимальное количество ключей)
+    bool isFull() {
+        return keys.size() == order - 1;  // Узел полон, если содержит order-1 ключей
     }
 
-    // Вставка ключа в незаполненный узел
+    // Проверка, имеет ли узел минимальное количество ключей
+    bool hasMinKeys() {
+        return keys.size() >= (order / 2) - 1;  // Минимум (order/2)-1 ключей для внутренних узлов
+    }
+
+    // Вставка ключа в неполный узел
     void insertNonFull(int key) {
-        int i = keys.size() - 1;
+        int i = keys.size() - 1; // Начинаем с последнего элемента
 
-        if (isLeaf) {
-            keys.push_back(0);
+        if (isLeaf) {            // Если это лист
+            keys.push_back(0);   // Добавляем место для нового ключа
+            // Сдвигаем элементы вправо, пока не найдем место для вставки
             while (i >= 0 && keys[i] > key) {
-                keys[i + 1] = keys[i];
-                i--;
+                keys[i + 1] = keys[i];  // Сдвигаем элемент вправо
+                i--;                    // Переходим к предыдущему элементу
             }
-            keys[i + 1] = key;
-        } else {
+            keys[i + 1] = key;   // Вставляем ключ на найденную позицию
+        } else {                 // Если это внутренний узел
+            // Находим дочерний узел для вставки
             while (i >= 0 && keys[i] > key) {
-                i--;
+                i--;             // Ищем правильного потомка
             }
-            i++;
+            i++;                 // Переходим к найденному потомку
 
-            if (children[i]->keys.size() == 2 * degree - 1) {
-                splitChild(i);
+            // Если дочерний узел полон, разделяем его
+            if (children[i]->isFull()) {
+                splitChild(i, children[i]);  // Разделяем полный узел
+                // После разделения проверяем, в какой части вставлять
                 if (keys[i] < key) {
-                    i++;
+                    i++;         // Переходим к правой части после разделения
                 }
             }
-            children[i]->insertNonFull(key);
+            children[i]->insertNonFull(key);  // Рекурсивно вставляем в дочерний узел
         }
     }
 
     // Разделение полного дочернего узла
-    void splitChild(int index) {
-        BTreeNode* fullChild = children[index];
-        BTreeNode* newChild = new BTreeNode(degree, fullChild->isLeaf);
-
-        // Копируем последние (degree-1) ключей из fullChild в newChild
-        for (int j = 0; j < degree - 1; j++) {
-            newChild->keys.push_back(fullChild->keys[j + degree]);
+    void splitChild(int i, BTreeNode* y) {
+        int midIndex = (order - 1) / 2;  // Находим индекс среднего элемента
+        
+        // Создаем новый узел и инициализируем его
+        BTreeNode* z = new BTreeNode();                    // Выделяем память для нового узла
+        z->initialize(y->order, y->isLeaf);               // Инициализируем с теми же свойствами
+        
+        // Копируем правую половину ключей из y в z
+        for (int j = midIndex + 1; j < y->keys.size(); j++) {
+            z->keys.push_back(y->keys[j]);  // Копируем ключ в новый узел
         }
 
-        // Копируем последние degree дочерних узлов, если fullChild не лист
-        if (!fullChild->isLeaf) {
-            for (int j = 0; j < degree; j++) {
-                newChild->children.push_back(fullChild->children[j + degree]);
+        // Если узел не лист, копируем соответствующие потомки
+        if (!y->isLeaf) {
+            for (int j = midIndex + 1; j < y->children.size(); j++) {
+                z->children.push_back(y->children[j]);  // Копируем указатель на потомка
             }
-            fullChild->children.resize(degree);
         }
 
-        // Перемещаем средний ключ вверх
-        keys.insert(keys.begin() + index, fullChild->keys[degree - 1]);
-        children.insert(children.begin() + index + 1, newChild);
+        // Уменьшаем размер исходного узла y
+        y->keys.resize(midIndex);        // Оставляем только левую половину ключей
+        if (!y->isLeaf) {
+            y->children.resize(midIndex + 1);  // Оставляем соответствующих потомков
+        }
 
-        // Уменьшаем размер fullChild
-        fullChild->keys.resize(degree - 1);
+        // Вставляем новый дочерний узел в текущий узел
+        children.insert(children.begin() + i + 1, z);  // Добавляем z как правого потомка
+
+        // Средний ключ поднимается в текущий узел
+        keys.insert(keys.begin() + i, y->keys[midIndex]);  // Поднимаем средний ключ
     }
 
-    // Печать узла (для отладки)
+    // Поиск ключа в поддереве
+    BTreeNode* search(int key) {
+        int i = 0;               // Начинаем с первого ключа
+        // Ищем позицию ключа в текущем узле
+        while (i < keys.size() && key > keys[i]) {
+            i++;                 // Переходим к следующему ключу
+        }
+
+        // Если нашли ключ в текущем узле
+        if (i < keys.size() && keys[i] == key) {
+            return this;         // Возвращаем указатель на текущий узел
+        }
+
+        // Если это лист и ключ не найден
+        if (isLeaf) {
+            return nullptr;      // Ключа нет в дереве
+        }
+
+        // Рекурсивно ищем в соответствующем дочернем узле
+        return children[i]->search(key);
+    }
+
+    // Обход дерева в порядке возрастания (in-order traversal)
     void traverse() {
         int i;
+        // Проходим по всем ключам в узле
         for (i = 0; i < keys.size(); i++) {
+            // Если не лист, сначала обходим левого потомка
             if (!isLeaf) {
-                children[i]->traverse();
+                children[i]->traverse();  // Рекурсивный обход левого поддерева
             }
-            cout << keys[i] << " ";
+            cout << keys[i] << " ";       // Выводим текущий ключ
         }
+
+        // Если не лист, обходим последнего потомка
         if (!isLeaf) {
-            children[i]->traverse();
+            children[i]->traverse();      // Рекурсивный обход правого поддерева
+        }
+    }
+
+    // Вывод структуры дерева в красивом виде с использованием символов
+    void printTree(string prefix = "", bool isLast = true, int childIndex = -1) {
+        cout << prefix;                   // Выводим отступ
+        cout << (isLast ? "└── " : "├── ");  // Выбираем символ в зависимости от позиции
+
+        // Показываем индекс потомка если это не корень
+        if (childIndex >= 0) {
+            cout << "(" << childIndex << ") ";  // Номер потомка в родительском узле
+        }
+        
+        // Выводим все ключи узла в квадратных скобках
+        cout << "[";
+        for (int i = 0; i < keys.size(); i++) {
+            if (i > 0) cout << ", ";      // Разделяем ключи запятыми
+            cout << keys[i];              // Выводим ключ
+        }
+        cout << "]";
+
+        // Дополнительная информация о узле
+        cout << " (ключей: " << keys.size();  // Количество ключей
+        if (!isLeaf) {
+            cout << ", потомков: " << children.size();  // Количество потомков
+        }
+        cout << ")";
+
+        // Помечаем листовые узлы
+        if (isLeaf) {
+            cout << " [ЛИСТ]";            // Метка для листового узла
+        }
+        cout << endl;                     // Переход на новую строку
+
+        // Рекурсивно выводим всех потомков
+        if (!isLeaf) {
+            for (int i = 0; i < children.size(); i++) {
+                bool isLastChild = (i == children.size() - 1);  // Последний ли это потомок
+                // Формируем новый отступ для потомка
+                string newPrefix = prefix + (isLast ? "    " : "│   ");
+                // Рекурсивно выводим потомка
+                children[i]->printTree(newPrefix, isLastChild, i);
+            }
+        }
+    }
+
+    // Запись структуры дерева в файл (аналогично printTree)
+    void writeTreeToFile(ofstream& file, string prefix = "", bool isLast = true, int childIndex = -1) {
+        file << prefix;                   // Записываем отступ в файл
+        file << (isLast ? "└── " : "├── ");  // Записываем символ структуры
+
+        // Показываем индекс потомка если это не корень
+        if (childIndex >= 0) {
+            file << "(" << childIndex << ") ";  // Номер потомка
+        }
+        
+        // Записываем все ключи узла
+        file << "[";
+        for (int i = 0; i < keys.size(); i++) {
+            if (i > 0) file << ", ";      // Разделяем запятыми
+            file << keys[i];              // Записываем ключ
+        }
+        file << "]";
+
+        // Записываем дополнительную информацию
+        file << " (ключей: " << keys.size();
+        if (!isLeaf) {
+            file << ", потомков: " << children.size();
+        }
+        file << ")";
+
+        // Помечаем листья
+        if (isLeaf) {
+            file << " [ЛИСТ]";
+        }
+        file << endl;                     // Новая строка в файле
+
+        // Рекурсивно записываем всех потомков
+        if (!isLeaf) {
+            for (int i = 0; i < children.size(); i++) {
+                bool isLastChild = (i == children.size() - 1);
+                string newPrefix = prefix + (isLast ? "    " : "│   ");
+                children[i]->writeTreeToFile(file, newPrefix, isLastChild, i);
+            }
         }
     }
 };
 
-class BTree {
-public:
-    BTreeNode* root;
-    int degree;
+// Структура B-дерева (без конструктора)
+struct BTree {
+    BTreeNode* root;  // Указатель на корень дерева
+    int order;        // Порядок дерева
 
-    BTree(int degree) {
-        this->degree = degree;
-        root = new BTreeNode(degree, true);
+    // Функция инициализации B-дерева (заменяет конструктор)
+    void initialize(int m) {
+        order = m;        // Устанавливаем порядок дерева
+        root = nullptr;   // Изначально дерево пустое
     }
 
-    ~BTree() {
-        delete root;
-    }
-
+    // Поиск ключа в дереве
     BTreeNode* search(int key) {
-        return root->search(key);
+        // Если дерево пустое, возвращаем nullptr, иначе ищем в корне
+        return (root == nullptr) ? nullptr : root->search(key);
     }
 
-    void insert(int key) {
-        if (root->keys.size() == 2 * degree - 1) {
-            BTreeNode* newRoot = new BTreeNode(degree, false);
-            newRoot->children.push_back(root);
-            newRoot->splitChild(0);
-            root = newRoot;
+    // Вставка ключа с проверкой на дубликаты
+    bool insert(int key) {
+        // Проверяем, есть ли уже такой ключ в дереве
+        if (search(key) != nullptr) {
+            cout << "Ключ " << key << " уже существует в дереве! Пропускаем." << endl;
+            return false;  // Ключ не был вставлен
         }
-        root->insertNonFull(key);
+
+        if (root == nullptr) {  // Если дерево пустое
+            // Создаем и инициализируем первый узел (корень-лист)
+            root = new BTreeNode();           // Выделяем память для корня
+            root->initialize(order, true);    // Инициализируем как лист
+            root->keys.push_back(key);        // Добавляем ключ в корень
+        } else {
+            // Если корень полон, создаем новый корень
+            if (root->isFull()) {
+                // Создаем и инициализируем новый корень (не лист)
+                BTreeNode* temp = new BTreeNode();      // Выделяем память для нового корня
+                temp->initialize(order, false);        // Инициализируем как внутренний узел
+                temp->children.push_back(root);        // Старый корень становится потомком
+                temp->splitChild(0, root);             // Разделяем старый корень
+
+                // Определяем, в какую часть вставлять новый ключ
+                int i = 0;
+                if (temp->keys[0] < key) {
+                    i++;  // Вставляем в правую часть
+                }
+                temp->children[i]->insertNonFull(key);  // Вставляем в выбранную часть
+                root = temp;  // Обновляем корень
+            } else {
+                root->insertNonFull(key);  // Вставляем в неполный корень
+            }
+        }
+        return true;  // Ключ успешно вставлен
     }
 
+    // Вывод дерева в порядке возрастания
     void traverse() {
-        if (root != nullptr) {
-            root->traverse();
-        }
-    }
-
-    // Получение высоты дерева
-    int getHeight() {
-        return getHeight(root);
-    }
-
-    int getHeight(BTreeNode* node) {
-        if (node == nullptr || node->isLeaf) {
-            return 1;
-        }
-        return 1 + getHeight(node->children[0]);
-    }
-
-    // Подсчет узлов
-    int getNodeCount() {
-        return getNodeCount(root);
-    }
-
-    int getNodeCount(BTreeNode* node) {
-        if (node == nullptr) return 0;
-        int count = 1;
-        for (auto child : node->children) {
-            count += getNodeCount(child);
-        }
-        return count;
-    }
-
-    // Визуализация дерева
-    void printTree() {
-        if (root == nullptr) {
-            cout << "Дерево пусто\n";
-            return;
-        }
-        
-        cout << "\n=== B-ДЕРЕВО (степень " << degree << ") ===\n";
-        printLevel(root, 0);
-    }
-
-private:
-    void printLevel(BTreeNode* node, int level) {
-        if (node == nullptr) return;
-        
-        // Печатаем отступ
-        for (int i = 0; i < level; i++) {
-            cout << "    ";
-        }
-        
-        // Печатаем ключи узла
-        cout << "[";
-        for (int i = 0; i < node->keys.size(); i++) {
-            cout << node->keys[i];
-            if (i < node->keys.size() - 1) cout << ", ";
-        }
-        cout << "]";
-        if (node->isLeaf) cout << " (лист)";
-        cout << "\n";
-        
-        // Рекурсивно печатаем дочерние узлы
-        for (auto child : node->children) {
-            printLevel(child, level + 1);
-        }
-    }
-};
-
-// ================ B+-ДЕРЕВО ================
-
-class BPlusTreeNode {
-public:
-    vector<int> keys;
-    vector<BPlusTreeNode*> children;
-    BPlusTreeNode* next;  // Указатель на следующий листовой узел
-    bool isLeaf;
-    int degree;
-
-    BPlusTreeNode(int degree, bool isLeaf) {
-        this->degree = degree;
-        this->isLeaf = isLeaf;
-        this->next = nullptr;
-        keys.reserve(2 * degree - 1);
-        if (!isLeaf) {
-            children.reserve(2 * degree);
-        }
-    }
-
-    ~BPlusTreeNode() {
-        for (auto child : children) {
-            delete child;
-        }
-    }
-
-    BPlusTreeNode* search(int key) {
-        int i = 0;
-        
-        if (isLeaf) {
-            // В листе ищем точное совпадение
-            for (int j = 0; j < keys.size(); j++) {
-                if (keys[j] == key) {
-                    return this;
-                }
-            }
-            return nullptr;
+        if (root != nullptr) {  // Если дерево не пустое
+            cout << "Содержимое B-дерева: ";
+            root->traverse();   // Обходим дерево начиная с корня
+            cout << endl;       // Переход на новую строку
         } else {
-            // Во внутреннем узле ищем подходящего ребенка
-            while (i < keys.size() && key >= keys[i]) {
-                i++;
-            }
-            return children[i]->search(key);
+            cout << "Дерево пустое!" << endl;  // Сообщение для пустого дерева
         }
     }
 
-    void insertNonFull(int key) {
-        int i = keys.size() - 1;
-
-        if (isLeaf) {
-            keys.push_back(0);
-            while (i >= 0 && keys[i] > key) {
-                keys[i + 1] = keys[i];
-                i--;
+    // Вывод структуры дерева в консоль
+    void printStructure() {
+        if (root != nullptr) {  // Если дерево не пустое
+            cout << "\nСтруктура B-дерева порядка " << order << ":" << endl;
+            cout << "Корень: ";  // Выводим информацию о корне
+            
+            // Выводим ключи корня
+            cout << "[";
+            for (int i = 0; i < root->keys.size(); i++) {
+                if (i > 0) cout << ", ";  // Разделяем запятыми
+                cout << root->keys[i];    // Выводим ключ корня
             }
-            keys[i + 1] = key;
+            cout << "]" << endl;
+            root->printTree();  // Выводим структуру дерева
         } else {
-            while (i >= 0 && key < keys[i]) {
-                i--;
-            }
-            i++;
-
-            if (children[i]->keys.size() == 2 * degree - 1) {
-                splitChild(i);
-                if (key >= keys[i]) {
-                    i++;
-                }
-            }
-            children[i]->insertNonFull(key);
+            cout << "Дерево пустое!" << endl;  // Сообщение для пустого дерева
         }
     }
 
-    void splitChild(int index) {
-        BPlusTreeNode* fullChild = children[index];
-        BPlusTreeNode* newChild = new BPlusTreeNode(degree, fullChild->isLeaf);
-
-        if (fullChild->isLeaf) {
-            // Для листового узла копируем ключи начиная с середины
-            int mid = degree - 1;
-            for (int j = mid; j < fullChild->keys.size(); j++) {
-                newChild->keys.push_back(fullChild->keys[j]);
-            }
-            
-            // Связываем листовые узлы
-            newChild->next = fullChild->next;
-            fullChild->next = newChild;
-            
-            // В B+ дереве копируем первый ключ нового узла вверх
-            int keyToCopyUp = newChild->keys[0];
-            keys.insert(keys.begin() + index, keyToCopyUp);
-            children.insert(children.begin() + index + 1, newChild);
-            
-            // Обрезаем исходный узел
-            fullChild->keys.resize(mid);
-        } else {
-            // Для внутреннего узла
-            int mid = degree - 1;
-            for (int j = mid + 1; j < fullChild->keys.size(); j++) {
-                newChild->keys.push_back(fullChild->keys[j]);
-            }
-            
-            for (int j = mid + 1; j < fullChild->children.size(); j++) {
-                newChild->children.push_back(fullChild->children[j]);
-            }
-            
-            // Перемещаем средний ключ вверх
-            int keyToMoveUp = fullChild->keys[mid];
-            keys.insert(keys.begin() + index, keyToMoveUp);
-            children.insert(children.begin() + index + 1, newChild);
-            
-            // Обрезаем исходный узел
-            fullChild->keys.resize(mid);
-            fullChild->children.resize(mid + 1);
-        }
+    // Вывод свойств B-дерева
+    void validateProperties() {
+        cout << "\n=== Свойства B-дерева порядка " << order << " ===" << endl;
+        cout << "Свойство 1: Глубина всех листьев одинакова" << endl;
+        cout << "Свойство 2: Узлы (кроме корня) содержат от " << (order/2)-1 << " до " << order-1 << " ключей" << endl;
+        cout << "Свойство 3: Внутренние узлы (кроме корня) имеют минимум " << order/2 << " потомков" << endl;
+        cout << "Свойство 4: Корень-не-лист имеет минимум 2 потомка" << endl;
+        cout << "Свойство 5: Узел с n-1 ключами имеет n потомков" << endl;
+        cout << "Свойство 6: Ключи в узле в порядке возрастания" << endl;
+        cout << "Свойство 7: Все ключи в дереве уникальны (нет дубликатов)" << endl;
     }
+
 };
 
-class BPlusTree {
-public:
-    BPlusTreeNode* root;
-    int degree;
-
-    BPlusTree(int degree) {
-        this->degree = degree;
-        root = new BPlusTreeNode(degree, true);
-    }
-
-    ~BPlusTree() {
-        delete root;
-    }
-
-    BPlusTreeNode* search(int key) {
-        return root->search(key);
-    }
-
-    void insert(int key) {
-        if (root->keys.size() == 2 * degree - 1) {
-            BPlusTreeNode* newRoot = new BPlusTreeNode(degree, false);
-            newRoot->children.push_back(root);
-            newRoot->splitChild(0);
-            root = newRoot;
-        }
-        root->insertNonFull(key);
-    }
-
-    // Печать всех ключей в порядке возрастания (через листья)
-    void traverseLeaves() {
-        BPlusTreeNode* current = getFirstLeaf();
-        while (current != nullptr) {
-            for (int key : current->keys) {
-                cout << key << " ";
-            }
-            current = current->next;
-        }
-    }
-
-    BPlusTreeNode* getFirstLeaf() {
-        BPlusTreeNode* current = root;
-        while (!current->isLeaf) {
-            current = current->children[0];
-        }
-        return current;
-    }
-
-    int getHeight() {
-        return getHeight(root);
-    }
-
-    int getHeight(BPlusTreeNode* node) {
-        if (node == nullptr || node->isLeaf) {
-            return 1;
-        }
-        return 1 + getHeight(node->children[0]);
-    }
-
-    int getNodeCount() {
-        return getNodeCount(root);
-    }
-
-    int getNodeCount(BPlusTreeNode* node) {
-        if (node == nullptr) return 0;
-        int count = 1;
-        for (auto child : node->children) {
-            count += getNodeCount(child);
-        }
-        return count;
-    }
-
-    void printTree() {
-        if (root == nullptr) {
-            cout << "Дерево пусто\n";
-            return;
-        }
-        
-        cout << "\n=== B+-ДЕРЕВО (степень " << degree << ") ===\n";
-        printLevel(root, 0);
-        
-        cout << "\nПоследовательность листьев: ";
-        traverseLeaves();
-        cout << "\n";
-    }
-
-private:
-    void printLevel(BPlusTreeNode* node, int level) {
-        if (node == nullptr) return;
-        
-        for (int i = 0; i < level; i++) {
-            cout << "    ";
-        }
-        
-        cout << "[";
-        for (int i = 0; i < node->keys.size(); i++) {
-            cout << node->keys[i];
-            if (i < node->keys.size() - 1) cout << ", ";
-        }
-        cout << "]";
-        if (node->isLeaf) cout << " (лист)";
-        cout << "\n";
-        
-        for (auto child : node->children) {
-            printLevel(child, level + 1);
-        }
-    }
-};
-
-// ================ КЛАСС ДЛЯ ТЕСТИРОВАНИЯ ================
-
-class TreeTester {
-private:
-    BTree* btree;
-    BPlusTree* bplusTree;
-    int degree;
-    vector<int> insertedKeys;
-
-public:
-    TreeTester(int deg) : degree(deg) {
-        btree = new BTree(degree);
-        bplusTree = new BPlusTree(degree);
-    }
-
-    ~TreeTester() {
-        delete btree;
-        delete bplusTree;
-    }
-
-    void printMenu() {
-        cout << "\n" << string(60, '=') << "\n";
-        cout << "    ДЕМОНСТРАЦИЯ B-ДЕРЕВЬЕВ И B+-ДЕРЕВЬЕВ\n";
-        cout << string(60, '=') << "\n";
-        cout << "1. Вставить ключ\n";
-        cout << "2. Найти ключ\n";
-        cout << "3. Показать деревья\n";
-        cout << "4. Вставить случайные ключи\n";
-        cout << "5. Сравнить характеристики\n";
-        cout << "6. Тест производительности\n";
-        cout << "7. Изменить степень дерева\n";
-        cout << "8. Очистить деревья\n";
-        cout << "0. Выход\n";
-        cout << string(60, '-') << "\n";
-        cout << "Текущая степень: " << degree << " | Вставлено ключей: " << insertedKeys.size() << "\n";
-        cout << "Выберите действие: ";
-    }
-
-    void insertKey() {
-        int key;
-        cout << "Введите ключ для вставки: ";
-        cin >> key;
-
-        if (find(insertedKeys.begin(), insertedKeys.end(), key) != insertedKeys.end()) {
-            cout << "Ключ " << key << " уже существует!\n";
-            return;
-        }
-
-        auto start = high_resolution_clock::now();
-        btree->insert(key);
-        auto btree_time = high_resolution_clock::now() - start;
-
-        start = high_resolution_clock::now();
-        bplusTree->insert(key);
-        auto bplus_time = high_resolution_clock::now() - start;
-
-        insertedKeys.push_back(key);
-        sort(insertedKeys.begin(), insertedKeys.end());
-
-        cout << "Ключ " << key << " успешно вставлен!\n";
-        cout << "Время вставки - B-дерево: " << duration_cast<nanoseconds>(btree_time).count() << "ns, ";
-        cout << "B+-дерево: " << duration_cast<nanoseconds>(bplus_time).count() << "ns\n";
-    }
-
-    void searchKey() {
-        int key;
-        cout << "Введите ключ для поиска: ";
-        cin >> key;
-
-        auto start = high_resolution_clock::now();
-        BTreeNode* btree_result = btree->search(key);
-        auto btree_time = high_resolution_clock::now() - start;
-
-        start = high_resolution_clock::now();
-        BPlusTreeNode* bplus_result = bplusTree->search(key);
-        auto bplus_time = high_resolution_clock::now() - start;
-
-        cout << "\nРезультаты поиска ключа " << key << ":\n";
-        cout << "B-дерево: " << (btree_result ? "НАЙДЕН" : "НЕ НАЙДЕН");
-        cout << " (время: " << duration_cast<nanoseconds>(btree_time).count() << "ns)\n";
-        cout << "B+-дерево: " << (bplus_result ? "НАЙДЕН" : "НЕ НАЙДЕН");
-        cout << " (время: " << duration_cast<nanoseconds>(bplus_time).count() << "ns)\n";
-    }
-
-    void showTrees() {
-        btree->printTree();
-        bplusTree->printTree();
-    }
-
-    void insertRandomKeys() {
-        int count;
-        cout << "Сколько случайных ключей вставить? ";
-        cin >> count;
-
-        random_device rd;
-        mt19937 gen(rd());
-        uniform_int_distribution<> dis(1, 1000);
-
-        vector<int> newKeys;
-        for (int i = 0; i < count; i++) {
-            int key;
-            do {
-                key = dis(gen);
-            } while (find(insertedKeys.begin(), insertedKeys.end(), key) != insertedKeys.end() ||
-                     find(newKeys.begin(), newKeys.end(), key) != newKeys.end());
-            newKeys.push_back(key);
-        }
-
-        cout << "Вставляем ключи: ";
-        for (int key : newKeys) {
-            cout << key << " ";
-            btree->insert(key);
-            bplusTree->insert(key);
-            insertedKeys.push_back(key);
-        }
-        cout << "\n";
-
-        sort(insertedKeys.begin(), insertedKeys.end());
-        cout << "Успешно вставлено " << count << " ключей!\n";
-    }
-
-    void compareCharacteristics() {
-        cout << "\n" << string(50, '=') << "\n";
-        cout << "         СРАВНЕНИЕ ХАРАКТЕРИСТИК\n";
-        cout << string(50, '=') << "\n";
-        
-        cout << left << setw(25) << "Характеристика" 
-             << setw(12) << "B-дерево" 
-             << setw(12) << "B+-дерево" << "\n";
-        cout << string(50, '-') << "\n";
-        
-        cout << left << setw(25) << "Высота дерева:" 
-             << setw(12) << btree->getHeight() 
-             << setw(12) << bplusTree->getHeight() << "\n";
-             
-        cout << left << setw(25) << "Количество узлов:" 
-             << setw(12) << btree->getNodeCount() 
-             << setw(12) << bplusTree->getNodeCount() << "\n";
-             
-        cout << left << setw(25) << "Степень дерева:" 
-             << setw(12) << degree 
-             << setw(12) << degree << "\n";
-             
-        cout << left << setw(25) << "Всего ключей:" 
-             << setw(12) << insertedKeys.size() 
-             << setw(12) << insertedKeys.size() << "\n";
-
-        cout << "\nОСНОВНЫЕ РАЗЛИЧИЯ:\n";
-        cout << "• B-дерево: данные во всех узлах, лучше для точечного поиска\n";
-        cout << "• B+-дерево: данные только в листьях, лучше для диапазонных запросов\n";
-        cout << "• B+-дерево: листья связаны в список для последовательного доступа\n";
-    }
-
-    void performanceTest() {
-        cout << "Тест производительности на 1000 операций...\n";
-        
-        vector<int> testKeys;
-        random_device rd;
-        mt19937 gen(rd());
-        uniform_int_distribution<> dis(10000, 20000);
-        
-        // Генерируем тестовые ключи
-        for (int i = 0; i < 1000; i++) {
-            int key;
-            do {
-                key = dis(gen);
-            } while (find(testKeys.begin(), testKeys.end(), key) != testKeys.end());
-            testKeys.push_back(key);
-        }
-
-        // Тест вставки
-        auto start = high_resolution_clock::now();
-        for (int key : testKeys) {
-            btree->insert(key);
-        }
-        auto btree_insert_time = high_resolution_clock::now() - start;
-
-        start = high_resolution_clock::now();
-        for (int key : testKeys) {
-            bplusTree->insert(key);
-        }
-        auto bplus_insert_time = high_resolution_clock::now() - start;
-
-        // Тест поиска
-        start = high_resolution_clock::now();
-        for (int key : testKeys) {
-            btree->search(key);
-        }
-        auto btree_search_time = high_resolution_clock::now() - start;
-
-        start = high_resolution_clock::now();
-        for (int key : testKeys) {
-            bplusTree->search(key);
-        }
-        auto bplus_search_time = high_resolution_clock::now() - start;
-
-        cout << "\nРЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ:\n";
-        cout << string(50, '-') << "\n";
-        cout << "Вставка 1000 элементов:\n";
-        cout << "  B-дерево:  " << duration_cast<microseconds>(btree_insert_time).count() << "μs\n";
-        cout << "  B+-дерево: " << duration_cast<microseconds>(bplus_insert_time).count() << "μs\n";
-        cout << "\nПоиск 1000 элементов:\n";
-        cout << "  B-дерево:  " << duration_cast<microseconds>(btree_search_time).count() << "μs\n";
-        cout << "  B+-дерево: " << duration_cast<microseconds>(bplus_search_time).count() << "μs\n";
-
-        // Добавляем ключи в основной список
-        for (int key : testKeys) {
-            insertedKeys.push_back(key);
-        }
-        sort(insertedKeys.begin(), insertedKeys.end());
-    }
-
-    void changeDegree() {
-        int newDegree;
-        cout << "Введите новую степень дерева (минимум 2): ";
-        cin >> newDegree;
-        
-        if (newDegree < 2) {
-            cout << "Ошибка: степень должна быть не менее 2!\n";
-            return;
-        }
-        
-        vector<int> oldKeys = insertedKeys;
-        
-        delete btree;
-        delete bplusTree;
-        
-        degree = newDegree;
-        btree = new BTree(degree);
-        bplusTree = new BPlusTree(degree);
-        insertedKeys.clear();
-        
-        // Повторно вставляем ключи
-        for (int key : oldKeys) {
-            btree->insert(key);
-            bplusTree->insert(key);
-            insertedKeys.push_back(key);
-        }
-        
-        cout << "Степень изменена на " << degree << ". Деревья пересозданы.\n";
-    }
-
-    void clearTrees() {
-        delete btree;
-        delete bplusTree;
-        
-        btree = new BTree(degree);
-        bplusTree = new BPlusTree(degree);
-        insertedKeys.clear();
-        
-        cout << "Деревья очищены.\n";
-    }
-
-    void run() {
-        int choice;
-        
-        cout << "Добро пожаловать в демонстрацию B-деревьев и B+-деревьев!\n";
-        cout << "Эта программа покажет различия между двумя структурами данных.\n";
-        
-        do {
-            printMenu();
-            cin >> choice;
-            
-            switch (choice) {
-                case 1: insertKey(); break;
-                case 2: searchKey(); break;
-                case 3: showTrees(); break;
-                case 4: insertRandomKeys(); break;
-                case 5: compareCharacteristics(); break;
-                case 6: performanceTest(); break;
-                case 7: changeDegree(); break;
-                case 8: clearTrees(); break;
-                case 0: cout << "До свидания!\n"; break;
-                default: cout << "Неверный выбор!\n"; break;
-            }
-            
-            if (choice != 0) {
-                cout << "\nНажмите Enter для продолжения...";
-                cin.ignore();
-                cin.get();
-            }
-            
-        } while (choice != 0);
-    }
-};
-
-// ================ ГЛАВНАЯ ФУНКЦИЯ ================
-
+// Главная функция программы
 int main() {
-    // Устанавливаем локаль для корректного отображения русского текста
-    setlocale(LC_ALL, "Russian");
+    int order;    // Переменная для хранения порядка дерева
+    int choice;   // Переменная для выбора пользователя
     
-    cout << string(60, '=') << "\n";
-    cout << "  ДЕМОНСТРАЦИЯ B-ДЕРЕВЬЕВ И B+-ДЕРЕВЬЕВ\n";
-    cout << string(60, '=') << "\n";
-    cout << "Программа демонстрирует принципы работы и различия\n";
-    cout << "между B-деревьями и B+-деревьями.\n\n";
+    // Приветствие и ввод порядка дерева
+    cout << "=== Программа построения B-дерева ===" << endl;
+    cout << "Введите порядок дерева (минимум 3): ";
+    cin >> order;  // Читаем порядок дерева от пользователя
     
-    int degree;
-    cout << "Введите степень дерева (рекомендуется 3-5): ";
-    cin >> degree;
-    
-    if (degree < 2) {
-        cout << "Степень должна быть не менее 2. Установлена степень 3.\n";
-        degree = 3;
+    // Проверяем корректность ввода
+    if (order < 3) {
+        cout << "Порядок дерева должен быть не менее 3!" << endl;
+        return 1;  // Выходим с кодом ошибки
     }
+
+    // Создаем и инициализируем B-дерево заданного порядка
+    BTree tree;                // Объявляем структуру дерева
+    tree.initialize(order);    // Инициализируем дерево с заданным порядком
     
-    TreeTester tester(degree);
-    tester.run();
+    // Выводим информацию о созданном дереве
+    cout << "\nСоздано B-дерево порядка " << order << endl;
+    cout << "Максимум ключей в узле: " << order - 1 << endl;
+    cout << "Максимум потомков: " << order << endl;
+    cout << "Минимум ключей (для не-корневых узлов): " << (order/2) - 1 << endl;
+    cout << "Минимум потомков (для внутренних не-корневых узлов): " << order/2 << endl;
+    cout << "ВНИМАНИЕ: Дубликаты ключей не допускаются!" << endl;
     
-    return 0;
+    // Предлагаем пользователю выбрать способ заполнения
+    cout << "\nВыберите способ заполнения дерева:" << endl;
+    cout << "1. Случайное заполнение" << endl;
+    cout << "2. Ввод значений вручную" << endl;
+    cout << "Ваш выбор: ";
+    cin >> choice;  // Читаем выбор пользователя
+
+    if (choice == 1) {  // Случайное заполнение
+        int count;      // Количество элементов для генерации
+        cout << "Введите количество элементов для генерации: ";
+        cin >> count;   // Читаем количество элементов
+        
+        // Проверяем корректность ввода
+        if (count <= 0) {
+            cout << "Количество элементов должно быть положительным!" << endl;
+            return 1;   // Выходим с кодом ошибки
+        }
+        
+        // Настраиваем генератор случайных чисел
+        random_device rd;                        // Источник энтропии
+        mt19937 gen(rd());                       // Генератор Mersenne Twister
+        uniform_int_distribution<> dis(1, 100);  // Равномерное распределение от 1 до 100
+        
+        cout << "\nГенерируемые числа: ";
+        int inserted = 0;  // Счетчик успешно вставленных элементов
+        
+        // Генерируем и вставляем случайные числа
+        for (int i = 0; i < count; i++) {
+            int value = dis(gen);       // Генерируем случайное число
+            cout << value << " ";       // Выводим сгенерированное число
+            if (tree.insert(value)) {   // Пытаемся вставить число
+                inserted++;             // Увеличиваем счетчик при успешной вставке
+            }
+        }
+        cout << endl;  // Переход на новую строку
+        cout << "Успешно вставлено уникальных элементов: " << inserted << " из " << count << endl;
+        
+    } else if (choice == 2) {  // Ручной ввод
+        int count;             // Количество элементов
+        cout << "Введите количество элементов: ";
+        cin >> count;          // Читаем количество элементов
+        
+        // Проверяем корректность ввода
+        if (count <= 0) {
+            cout << "Количество элементов должно быть положительным!" << endl;
+            return 1;          // Выходим с кодом ошибки
+        }
+        
+        cout << "Введите " << count << " чисел: ";
+        int inserted = 0;      // Счетчик успешно вставленных элементов
+        
+        // Читаем и вставляем числа от пользователя
+        for (int i = 0; i < count; i++) {
+            int value;         // Переменная для текущего числа
+            cin >> value;      // Читаем число от пользователя
+            if (tree.insert(value)) {  // Пытаемся вставить число
+                inserted++;    // Увеличиваем счетчик при успешной вставке
+            }
+        }
+        cout << "Успешно вставлено уникальных элементов: " << inserted << " из " << count << endl;
+    } else {  // Неверный выбор
+        cout << "Неверный выбор!" << endl;
+        return 1;  // Выходим с кодом ошибки
+    }
+
+    // Выводим результаты построения дерева
+    cout << "\n" << string(60, '=') << endl;  // Разделительная линия
+    tree.traverse();       // Выводим содержимое дерева в отсортированном порядке
+    tree.printStructure(); // Выводим структуру дерева
+    
+    // Показываем свойства B-дерева
+    tree.validateProperties();
+
+    return 0;  // Успешное завершение программы
 }
+
+
+// B+ дерево
+// данные хранятся только в листьях, внутренние узлы содержат только ключи для навигации
+// все листья связаны в двусвязный список, что позволяет эффективно выполнять последовательное сканирование
+// *двусвязный список - тип данных, где каждая узел(элемент) хранит предыдущий и следующий элемент
+// ключи из листьев дублируются во внутренних узлах для навигации
+// внутренние узлы компактнее, так как содержат только ключи
